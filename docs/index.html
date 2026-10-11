@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文庫新刊チェック</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f6f2e9;
+    --paper-deep: #efe8d8;
+    --ink: #2c2620;
+    --ink-soft: #6b6053;
+    --line: #ddd2ba;
+    --accent-iwanami: #2f5d8a;
+    --accent-kodansha: #8a2f3d;
+    --accent-chikuma: #3d6b4a;
+    --accent-heibonsha: #4a3d6b;
+    --accent-hayakawa: #b5871f;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Sans JP", sans-serif;
+  }
+
+  body {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  header {
+    padding: 3.5rem 1.5rem 2rem;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+
+  header h1 {
+    font-family: "Shippori Mincho", serif;
+    font-weight: 700;
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    margin: 0 0 0.6rem;
+    line-height: 1.4;
+  }
+
+  header p {
+    color: var(--ink-soft);
+    line-height: 1.9;
+    margin: 0;
+    max-width: 42em;
+  }
+
+  .filters {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 1.5rem 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .filter-chip {
+    font-family: "Noto Sans JP", sans-serif;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+  }
+
+  .filter-chip[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0.5rem 1.5rem 5rem;
+  }
+
+  .book {
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    gap: 1.1rem;
+    padding: 1.4rem 0;
+    border-top: 1px solid var(--line);
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .book:first-of-type { border-top: none; }
+
+  .book-cover {
+    width: 84px;
+    height: 120px;
+    object-fit: cover;
+    background: var(--paper-deep);
+    border: 1px solid var(--line);
+  }
+
+  .book-cover.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Shippori Mincho", serif;
+    font-size: 0.75rem;
+    text-align: center;
+    color: var(--ink-soft);
+    padding: 0.4rem;
+    line-height: 1.5;
+  }
+
+  .book-label {
+    display: inline-block;
+    font-size: 0.72rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    color: #fff;
+    margin-bottom: 0.5rem;
+  }
+
+  .label-岩波文庫 { background: var(--accent-iwanami); }
+  .label-講談社学術文庫 { background: var(--accent-kodansha); }
+  .label-ちくま学芸文庫 { background: var(--accent-chikuma); }
+  .label-平凡社ライブラリー { background: var(--accent-heibonsha); }
+  .label-ハヤカワ文庫NF { background: var(--accent-hayakawa); }
+
+  .book-title {
+    font-family: "Shippori Mincho", serif;
+    font-weight: 500;
+    font-size: 1.08rem;
+    line-height: 1.6;
+    margin: 0 0 0.35rem;
+  }
+
+  .book-meta {
+    color: var(--ink-soft);
+    font-size: 0.85rem;
+    margin: 0;
+  }
+
+  .empty-state, .error-state {
+    padding: 3rem 0;
+    color: var(--ink-soft);
+    line-height: 1.9;
+  }
+
+  footer {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 1.5rem 1.5rem 3rem;
+    color: var(--ink-soft);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--line);
+  }
+
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>文庫新刊チェック</h1>
+  <p>
+    岩波文庫・講談社学術文庫・ちくま学芸文庫・平凡社ライブラリー・ハヤカワ文庫NFの新刊情報を、
+    毎朝まとめて確認できるページです。データは版元ドットコムとopenBDから自動取得しています。
+  </p>
+</header>
+
+<div class="filters" id="filters"></div>
+
+<main id="main">
+  <p class="empty-state">読み込み中です…</p>
+</main>
+
+<footer>
+  最終更新: <span id="updated-at">-</span><br>
+  データ提供: <a href="https://www.hanmoto.com/" target="_blank" rel="noopener">版元ドットコム</a> /
+  <a href="https://openbd.jp/" target="_blank" rel="noopener">openBD</a>
+</footer>
+
+<script>
+  const LABELS = ["岩波文庫", "講談社学術文庫", "ちくま学芸文庫", "平凡社ライブラリー", "ハヤカワ文庫NF"];
+  let allBooks = [];
+  let activeLabel = "すべて";
+
+  function formatDate(pubdate) {
+    if (!pubdate) return "発売日不明";
+    const m = String(pubdate).match(/(\d{4})[-/]?(\d{2})[-/]?(\d{2})?/);
+    if (!m) return pubdate;
+    return m[3] ? `${m[1]}年${m[2]}月${m[3]}日` : `${m[1]}年${m[2]}月`;
+  }
+
+  function render() {
+    const main = document.getElementById("main");
+    const books = activeLabel === "すべて"
+      ? allBooks
+      : allBooks.filter(b => b.label === activeLabel);
+
+    if (books.length === 0) {
+      main.innerHTML = `<p class="empty-state">まだ新刊が見つかっていません。翌朝の自動更新をお待ちください。</p>`;
+      return;
+    }
+
+    main.innerHTML = books.map(b => `
+      <a class="book" href="${b.link}" target="_blank" rel="noopener">
+        ${b.cover
+          ? `<img class="book-cover" src="${b.cover}" alt="" loading="lazy">`
+          : `<div class="book-cover placeholder">表紙<br>なし</div>`}
+        <div>
+          <span class="book-label label-${b.label}">${b.label}</span>
+          <p class="book-title">${b.title}</p>
+          <p class="book-meta">${b.author ? b.author + " ／ " : ""}${formatDate(b.pubdate)}</p>
+        </div>
+      </a>
+    `).join("");
+  }
+
+  function renderFilters() {
+    const filters = document.getElementById("filters");
+    const options = ["すべて", ...LABELS];
+    filters.innerHTML = options.map(label => `
+      <button class="filter-chip" data-label="${label}" aria-pressed="${label === activeLabel}">${label}</button>
+    `).join("");
+    filters.querySelectorAll(".filter-chip").forEach(btn => {
+      btn.addEventListener("click", () => {
+        activeLabel = btn.dataset.label;
+        filters.querySelectorAll(".filter-chip").forEach(b =>
+          b.setAttribute("aria-pressed", b === btn ? "true" : "false")
+        );
+        render();
+      });
+    });
+  }
+
+  async function load() {
+    try {
+      const res = await fetch("./data/books.json", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      allBooks = await res.json();
+      document.getElementById("updated-at").textContent =
+        new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" });
+      renderFilters();
+      render();
+    } catch (e) {
+      document.getElementById("main").innerHTML =
+        `<p class="error-state">データの読み込みに失敗しました(${e.message})。<br>初回セットアップ直後は、まだ books.json が生成されていない場合があります。</p>`;
+    }
+  }
+
+  load();
+</script>
+
+</body>
+</html>
