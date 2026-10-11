@@ -5,7 +5,7 @@
 openBD APIで書影・あらすじを補強したうえで docs/data/books.json を更新する。
 
 処理の流れ:
-  1. レーベルごとに紐づく出版社の「新刊検索RSS」を版元ドットコムから取得
+  1. 版元ドットコムの「新しい本」RSS(DISCOVERY_FEEDS)を取得
   2. タイトル/概要にレーベル名がそのまま含まれるものだけを候補として抽出
      (講談社や筑摩書房、早川書房は同一出版社内に複数の文庫レーベルがあるため、
       出版社名だけでなくレーベル名の文字列一致でも絞り込む)
@@ -47,7 +47,13 @@ LABELS = [
     {"label": "ハヤカワ文庫NF", "publisher": "早川書房"},
 ]
 
-HANMOTO_SEARCH_ENDPOINT = "https://www.hanmoto.com/bd/search/index.php"
+# 発見用のRSSフィード(複数指定可。全て取得して結果を統合する)。
+# 版元ドットコムのトップページ「新しい本」に埋め込まれているRSSのURL(旧検索RSSは廃止されていたため差し替え)。
+# レーベル名での絞り込みはこの後のスクリプト側(タイトル/概要の文字列一致)で行う。
+# 別のRSSのURLが見つかったら、ここに追加すればよい。
+DISCOVERY_FEEDS = [
+    "https://www.hanmoto.com/ci/bd/search/hdt/none/pg/none/edate/today/jpo/0/hgroup/1/skipnoimg/1/order/desc/sdate/today/vw/rss20",
+]
 
 
 def log(msg: str) -> None:
@@ -60,27 +66,6 @@ def http_get(url: str, timeout: int = 20) -> bytes:
         return res.read()
 
 
-def build_hanmoto_rss_url(publisher: str) -> str:
-    """
-    版元ドットコムの「出版社名で絞り込んだ新刊検索」をRSS2.0形式で取得するURLを組み立てる。
-
-    このURLパラメータは版元ドットコムが公開していた仕様(旧API仕様ページ)に基づく。
-    サイトが大幅リニューアルされているため、期待通りに機能しない場合は
-    README記載の代替手順を参照してエンドポイントを調整すること。
-    """
-    params = {
-        "SearchShuppansha": publisher,
-        "flg_searchmode": "shousai",
-        "ORDERBY": "DateShuppan",
-        "ORDERBY2": "DateShotenhatsubai",
-        "SORTORDER": "DESC",
-        "enc": "UTF-8",
-        "action_search_do4feed": "true",
-        "searchqueryword": f" 出版者（または発売者）={publisher}",
-    }
-    return f"{HANMOTO_SEARCH_ENDPOINT}?{urllib.parse.urlencode(params)}"
-
-
 ISBN_RE = re.compile(r"(97[89]\d{10}|\d{9}[\dXx])")
 
 
@@ -89,19 +74,28 @@ def extract_isbn(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def fetch_publisher_rss_items(publisher: str) -> list[dict]:
-    """出版社名で絞り込んだRSSを取得し、[{title, link, pubdate, isbn}, ...] を返す"""
-    url = build_hanmoto_rss_url(publisher)
+def fetch_feed_items(url: str) -> list[dict]:
+    """RSSを取得し、[{title, link, pubdate, description, isbn}, ...] を返す。失敗時は原因を診断ログに出す。"""
     try:
-        raw = http_get(url)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as res:
+            raw = res.read()
+            status = res.status
+            ctype = res.headers.get("Content-Type", "")
+            final_url = res.geturl()
     except Exception as e:  # noqa: BLE001
-        log(f"  [WARN] RSS取得失敗: {publisher} ({e})")
+        log(f"  [WARN] RSS取得失敗: {url} ({e})")
         return []
+
+    log(f"  取得: status={status} content-type={ctype} bytes={len(raw)}")
+    if final_url != url:
+        log(f"  リダイレクト先: {final_url}")
 
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as e:
-        log(f"  [WARN] RSSパース失敗: {publisher} ({e})")
+        log(f"  [WARN] RSSパース失敗 ({e})")
+        log(f"    先頭300文字: {raw[:300].decode('utf-8', errors='replace')!r}")
         return []
 
     items = []
@@ -193,15 +187,25 @@ def main() -> None:
 
     new_books: list[dict] = []
 
+    # 発見用フィードを取得(ISBNで重複排除)
+    all_items: list[dict] = []
+    seen_in_feed: set[str] = set()
+    for feed_url in DISCOVERY_FEEDS:
+        log(f"RSS取得中: {feed_url}")
+        for it in fetch_feed_items(feed_url):
+            key = it["isbn"] or it["link"]
+            if key in seen_in_feed:
+                continue
+            seen_in_feed.add(key)
+            all_items.append(it)
+        time.sleep(REQUEST_INTERVAL_SEC)
+    log(f"RSS合計 {len(all_items)}件")
+
     for entry in LABELS:
         label = entry["label"]
         publisher = entry["publisher"]
-        log(f"[{label}] {publisher} の新刊RSSを取得中...")
-
-        items = fetch_publisher_rss_items(publisher)
-        time.sleep(REQUEST_INTERVAL_SEC)
-        matched = filter_by_label(items, label)
-        log(f"[{label}] RSS {len(items)}件中 {len(matched)}件がレーベル名一致")
+        matched = filter_by_label(all_items, label)
+        log(f"[{label}] RSS {len(all_items)}件中 {len(matched)}件がレーベル名一致")
 
         candidate_isbns = [m["isbn"] for m in matched if m["isbn"]]
         openbd_info = enrich_with_openbd(candidate_isbns)
