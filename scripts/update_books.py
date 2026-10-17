@@ -20,6 +20,7 @@ import json
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -33,7 +34,7 @@ SEEN_FILE = DATA_DIR / "seen_isbns.json"
 BOOKS_FILE = DOCS_DATA_DIR / "books.json"
 
 USER_AGENT = "bunko-shinkan-checker/1.0 (personal use; https://github.com/)"
-REQUEST_INTERVAL_SEC = 1.0  # 相手サーバへの配慮のための最低間隔
+REQUEST_INTERVAL_SEC = 3.0  # 相手サーバへの配慮のための最低間隔(NDLサーチは429が出ることがあるため長め)
 MAX_BOOKS_KEPT = 500        # books.json に保持する最大件数
 LOOKBACK_DAYS = 30          # 何日前の月から検索するか
 LOOKAHEAD_DAYS = 120        # 何日先の月まで検索するか(刊行予定の書誌も含めるため)
@@ -58,10 +59,29 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}", file=sys.stderr)
 
 
-def http_get(url: str, timeout: int = 30) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        return res.read()
+def http_get(url: str, timeout: int = 60, retries: int = 3) -> bytes:
+    """タイムアウト・429・5xxのときは待ってから再試行する(NDLサーチは混雑時に遅い/429を返すことがある)"""
+    last: Exception | None = None
+    for attempt in range(1, retries + 1):
+        wait = 10 * attempt
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return res.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504):
+                raise
+            last = e
+            try:
+                wait = min(int(e.headers.get("Retry-After") or 0), 60) or wait
+            except ValueError:
+                pass
+        except OSError as e:  # タイムアウト・接続エラー(URLError/TimeoutErrorを含む)
+            last = e
+        if attempt < retries:
+            log(f"  [RETRY] {attempt}/{retries}回目に失敗 ({last}) → {wait}秒待って再試行")
+            time.sleep(wait)
+    raise last  # type: ignore[misc]
 
 
 # ---------- ユーティリティ ----------
@@ -175,6 +195,8 @@ def fetch_ndl_records(publisher: str, keyword: str, inprocess: bool) -> list[dic
         log(f"    先頭300文字: {raw[:300].decode('utf-8', errors='replace')!r}")
         return []
     log(f"  [{mode}] {info} / 解析できたレコード {len(records)}件")
+    if not records and "Record does not exist" in info:
+        return []  # 該当なし(正常)。URLや本文のダンプは不要
     if not records:
         log(f"    URL: {url}")
         log(f"    本文(先頭600文字): {raw[:600].decode('utf-8', errors='replace')!r}")
