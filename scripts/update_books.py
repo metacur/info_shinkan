@@ -5,7 +5,7 @@
 openBD APIで書影・あらすじを補強したうえで docs/data/books.json を更新する。
 
 処理の流れ:
-  1. 版元ドットコムの「新しい本」RSS(DISCOVERY_FEEDS)を取得
+  1. 版元ドットコムの「新しい本」RSS(build_discovery_feeds)を取得
   2. タイトル/概要にレーベル名がそのまま含まれるものだけを候補として抽出
      (講談社や筑摩書房、早川書房は同一出版社内に複数の文庫レーベルがあるため、
       出版社名だけでなくレーベル名の文字列一致でも絞り込む)
@@ -26,7 +26,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -47,13 +47,29 @@ LABELS = [
     {"label": "ハヤカワ文庫NF", "publisher": "早川書房"},
 ]
 
-# 発見用のRSSフィード(複数指定可。全て取得して結果を統合する)。
-# 版元ドットコムのトップページ「新しい本」に埋め込まれているRSSのURL(旧検索RSSは廃止されていたため差し替え)。
-# レーベル名での絞り込みはこの後のスクリプト側(タイトル/概要の文字列一致)で行う。
-# 別のRSSのURLが見つかったら、ここに追加すればよい。
-DISCOVERY_FEEDS = [
-    "https://www.hanmoto.com/ci/bd/search/hdt/none/pg/none/edate/today/jpo/0/hgroup/1/skipnoimg/1/order/desc/sdate/today/vw/rss20",
-]
+# 発見用のRSSフィードのURLテンプレート(版元ドットコムのトップページ「新しい本」に埋め込まれているURLが元)。
+# 日付条件(sdate/edate)と書影条件(skipnoimg)の効き方が公式に確認できないため、
+# 条件を変えた複数の候補を全て取得して結果を統合する。ログの「取得結果」で、どの候補が効いたか確認できる。
+FEED_TEMPLATE = (
+    "https://www.hanmoto.com/ci/bd/search/hdt/none/pg/none/edate/{edate}"
+    "/jpo/0/hgroup/1/skipnoimg/{skipnoimg}/order/desc/sdate/{sdate}/vw/rss20"
+)
+LOOKBACK_DAYS = 14   # 何日前の発売分から取得するか
+LOOKAHEAD_DAYS = 30  # 何日先の発売予定分まで取得するか
+
+
+def build_discovery_feeds() -> list[str]:
+    today = date.today()
+    start = today - timedelta(days=LOOKBACK_DAYS)
+    end = today + timedelta(days=LOOKAHEAD_DAYS)
+    return [
+        # (A) 元のURL: 今日だけ・書影ありのみ
+        FEED_TEMPLATE.format(edate="today", sdate="today", skipnoimg=1),
+        # (B) 日付範囲(YYYYMMDD)・書影なしも含める
+        FEED_TEMPLATE.format(edate=end.strftime("%Y%m%d"), sdate=start.strftime("%Y%m%d"), skipnoimg=0),
+        # (C) 日付範囲(YYYY-MM-DD)・書影なしも含める
+        FEED_TEMPLATE.format(edate=end.isoformat(), sdate=start.isoformat(), skipnoimg=0),
+    ]
 
 
 def log(msg: str) -> None:
@@ -74,8 +90,26 @@ def extract_isbn(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child_text(el, *names: str) -> str:
+    for c in el:
+        if _local(c.tag) in names and (c.text or "").strip():
+            return c.text.strip()
+    return ""
+
+
+def _child_link(el) -> str:
+    for c in el:
+        if _local(c.tag) == "link":
+            return (c.get("href") or c.text or "").strip()
+    return ""
+
+
 def fetch_feed_items(url: str) -> list[dict]:
-    """RSSを取得し、[{title, link, pubdate, description, isbn}, ...] を返す。失敗時は原因を診断ログに出す。"""
+    """RSS/Atomを取得し、[{title, link, pubdate, description, isbn}, ...] を返す。失敗・0件時は診断ログを出す。"""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=20) as res:
@@ -99,21 +133,22 @@ def fetch_feed_items(url: str) -> list[dict]:
         return []
 
     items = []
-    for item in root.findall(".//item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pubdate = (item.findtext("pubDate") or "").strip()
-        description = (item.findtext("description") or "").strip()
-        isbn = extract_isbn(link) or extract_isbn(description)
+    for el in root.iter():
+        if _local(el.tag) not in ("item", "entry"):
+            continue
+        title = _child_text(el, "title")
+        link = _child_link(el)
+        pubdate = _child_text(el, "pubDate", "date", "published", "updated")
+        description = _child_text(el, "description", "summary", "content")
+        isbn = extract_isbn(link) or extract_isbn(description) or extract_isbn(title)
         items.append(
-            {
-                "title": title,
-                "link": link,
-                "pubdate": pubdate,
-                "description": description,
-                "isbn": isbn,
-            }
+            {"title": title, "link": link, "pubdate": pubdate, "description": description, "isbn": isbn}
         )
+
+    log(f"  取得結果: {len(items)}件 (ルート要素={_local(root.tag)})")
+    if not items:
+        # アイテムが0件のときは、構造を確認できるよう中身を出力する(小さいフィードのみ)
+        log(f"    本文(先頭1500文字): {raw[:1500].decode('utf-8', errors='replace')!r}")
     return items
 
 
@@ -190,7 +225,7 @@ def main() -> None:
     # 発見用フィードを取得(ISBNで重複排除)
     all_items: list[dict] = []
     seen_in_feed: set[str] = set()
-    for feed_url in DISCOVERY_FEEDS:
+    for feed_url in build_discovery_feeds():
         log(f"RSS取得中: {feed_url}")
         for it in fetch_feed_items(feed_url):
             key = it["isbn"] or it["link"]
